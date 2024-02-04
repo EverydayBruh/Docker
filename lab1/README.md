@@ -36,10 +36,10 @@ int main() {
 ## Результаты
 
 - **Вне Docker:**
-  - Execution time: 45.416183 seconds.
+  - Execution time: 45.142223 seconds.
 
 - **Внутри Docker:**
-  - Execution time: 45.142223 seconds.
+  - Execution time: 45.416183 seconds.
 
 ## Заключение
 
