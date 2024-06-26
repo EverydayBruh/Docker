@@ -1,3 +1,7 @@
+lab3/WPA2KeyExtractionService/dictionaries/weakpass_3w
+lab3/WPA2KeyExtractionService/dictionaries/BIG-WPA-LIST-1
+lab3/venv
+
 # Prerequisites
 *.d
 

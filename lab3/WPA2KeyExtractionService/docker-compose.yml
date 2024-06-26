@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  web:
+    build: ./api
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./uploads:/app/uploads
+    depends_on:
+      - rabbitmq
+
+  worker:
+    build: ./queue
+    volumes:
+      - ./uploads:/app/uploads
+      - ./dictionaries:/app/dictionaries 
+    depends_on:
+      - rabbitmq
+
+  rabbitmq:
+    image: "rabbitmq:3-management"
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+  db:
+    image: "postgres:12"
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: handshakes
+    volumes:
+      - ./db:/var/lib/postgresql/data
