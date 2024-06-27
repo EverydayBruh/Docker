@@ -1,34 +1,37 @@
 version: '3.8'
 
 services:
-  web:
-    build: ./api
-    ports:
-      - "5000:5000"
-    volumes:
-      - ./uploads:/app/uploads
-    depends_on:
-      - rabbitmq
-
-  worker:
-    build: ./queue
-    volumes:
-      - ./uploads:/app/uploads
-      - ./dictionaries:/app/dictionaries 
-    depends_on:
-      - rabbitmq
-
   rabbitmq:
-    image: "rabbitmq:3-management"
+    image: rabbitmq:3-management
+    container_name: rabbitmq
     ports:
       - "5672:5672"
       - "15672:15672"
-
-  db:
-    image: "postgres:12"
     environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: handshakes
+      RABBITMQ_DEFAULT_USER: user
+      RABBITMQ_DEFAULT_PASS: password
+
+  wpa2keyextractionservice:
+    build:
+      context: ./service
+    container_name: wpa2keyextractionservice
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: user
+      RABBITMQ_PASS: password
+      HASHCAT_CMD: /hashcat-wrapper/bin/hashcat  # Указываем путь к hashcat
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:
-      - ./db:/var/lib/postgresql/data
+      - ./dictionaries:/mnt/u/NewPojects/Proga/Docker/Docker/lab3/WPA2KeyExtractionService/dictionaries
+      - ./Tests/hc22000_files:/Tests/hc22000_files
+      - ./hashcat-wrapper/bin:/hashcat-wrapper/bin  # Монтируем символическую ссылку на бинарный файл hashcat
+      - ./hashcat-wrapper/lib:/hashcat-wrapper/lib  # Монтируем символическую ссылку на библиотеку hashcat
+      - ./hashcat-wrapper/share:/hashcat-wrapper/share  # Монтируем символическую ссылку на общие файлы hashcat
+    depends_on:
+      - rabbitmq
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
