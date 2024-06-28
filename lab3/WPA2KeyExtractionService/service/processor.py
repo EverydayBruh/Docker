@@ -3,56 +3,45 @@ import json
 import time
 import pika
 import os
-import docker
 
 # Константы путей к словарям
 WORDLIST_PATHS = {
-    1: '/mnt/u/NewPojects/Proga/Docker/Docker/lab3/WPA2KeyExtractionService/dictionaries/rockyou.txt',
-    2: '/mnt/u/NewPojects/Proga/Docker/Docker/lab3/WPA2KeyExtractionService/dictionaries/rockyou.txt',
-    3: '/mnt/u/NewPojects/Proga/Docker/Docker/lab3/WPA2KeyExtractionService/dictionaries/rockyou.txt',
-    4: '/mnt/u/NewPojects/Proga/Docker/Docker/lab3/WPA2KeyExtractionService/dictionaries/rockyou.txt'
+    1: '/dictionaries/rockyou.txt',
+    2: '/dictionaries/rockyou.txt',
+    3: '/dictionaries/rockyou.txt',
+    4: '/dictionaries/rockyou.txt'
 }
 
 
 def run_hashcat(hc22000_file, wordlist_file, output_file, channel):
-    client = docker.from_env()
     hashcat_cmd = [
-        '/hashcat-wrapper/bin/hashcat', '-m', '22000', '-a', '0',
+        'hashcat' , '-m', '22000', '-a', '0',
         hc22000_file, wordlist_file,
-        '--status', '--status-json', '--outfile', output_file
+        '--status', '--status-json', '--outfile', output_file, '--potfile-disable'
     ]
 
-    container = client.containers.run(
-        'your-hashcat-image',  # Замените на ваше имя образа
-        hashcat_cmd,
-        volumes={
-            '/mnt/u/NewPojects/Proga/Docker/Docker/lab3/WPA2KeyExtractionService/dictionaries': {'bind': '/mnt/u/NewPojects/Proga/Docker/Docker/lab3/WPA2KeyExtractionService/dictionaries', 'mode': 'rw'},
-            '/Tests/hc22000_files': {'bind': '/Tests/hc22000_files', 'mode': 'rw'},
-            '/hashcat-wrapper/bin': {'bind': '/hashcat-wrapper/bin', 'mode': 'rw'},
-            '/hashcat-wrapper/lib': {'bind': '/hashcat-wrapper/lib', 'mode': 'rw'},
-            '/hashcat-wrapper/share': {'bind': '/hashcat-wrapper/share', 'mode': 'rw'}
-        },
-        detach=True,
-        stdout=True,
-        stderr=True
-    )
+    process = subprocess.Popen(hashcat_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-    for log in container.logs(stream=True, stdout=True, stderr=True):
-        log_str = log.decode('utf-8').strip()
-        if log_str.startswith('{'):
-            status = json.loads(log_str)
-            send_progress(channel, status)
-        print(log_str)  # Вывод в консоль для дебаггинга
+    while True:
+        output = process.stdout.readline()
+        if output == '' and process.poll() is not None:
+            break
+        if output.strip().startswith('{'):
+            status = json.loads(output.strip())
+            send_progress(channel, hc22000_file, status)
+        print(output.strip())  # Вывод в консоль для дебаггинга
 
-    exit_code = container.wait()
-    if exit_code['StatusCode'] != 0:
-        print(f"Hashcat failed with error code: {exit_code['StatusCode']}")
+    stderr_output = process.stderr.read()
+    if stderr_output:
+        print(f"Hashcat failed with error: {stderr_output.strip()}")
+
+    process.stdout.close()
+    process.stderr.close()
 
     # Отправка результата после завершения работы Hashcat
-    read_output(output_file, channel)
-    container.remove()
+    read_output(output_file, hc22000_file, channel)
 
-def send_progress(channel, status):
+def send_progress(channel, hc22000_file, status):
     progress = status.get("progress", [0, 0])
     recovered_hashes = status.get("recovered_hashes", [0, 1])
     devices = status.get("devices", [])
@@ -67,18 +56,12 @@ def send_progress(channel, status):
     remaining_time_str = format_time(remaining_time)
 
     progress_message = {
+        'filepath': hc22000_file,
         'progress': f"{progress[0]}/{progress[1]} ({(progress[0]/progress[1])*100:.2f}%)",
         'recovered_hashes': f"{recovered_hashes[0]}/{recovered_hashes[1]}",
         'elapsed_time': elapsed_time_str,
         'remaining_time': remaining_time_str,
-        'devices': [
-            {
-                'device_id': device.get("device_id"),
-                'speed': device.get("speed"),
-                'temp': device.get("temp"),
-                'util': device.get("util")
-            } for device in devices
-        ]
+        'devices': devices
     }
 
     channel.basic_publish(exchange='', routing_key='progress_queue', body=json.dumps(progress_message))
@@ -95,14 +78,32 @@ def format_time(seconds):
     else:
         return f"{s}s"
 
-def read_output(output_file, channel):
+def read_output(output_file, filepath, channel):
     if os.path.exists(output_file):
         with open(output_file, 'r') as f:
             results = f.readlines()
             for result in results:
-                result_message = {'result': result.strip()}
+                result_parts = result.strip().split(':')
+                if len(result_parts) < 5:
+                    print("Invalid result format:", result)
+                    continue
+
+                bssid = result_parts[1]
+                ssid = result_parts[3]
+                password = result_parts[4]
+                success = bool(password)  # Assuming non-empty password means success
+
+                result_message = {
+                    'filepath': filepath,
+                    'bssid': bssid,
+                    'ssid': ssid,
+                    'password': password,
+                    'success': success
+                }
+
                 channel.basic_publish(exchange='', routing_key='result_queue', body=json.dumps(result_message))
                 print("Result sent:", result_message)  # Вывод в консоль для дебаггинга
+
 
 def on_request(ch, method, properties, body):
     request = json.loads(body)
@@ -117,6 +118,11 @@ def on_request(ch, method, properties, body):
         return
 
     print(f"Received request: {request}")  # Вывод в консоль для дебаггинга
+    if os.path.exists(output_file):
+        os.remove(output_file)
+        print(f"File {output_file} has been deleted.")
+    else:
+        print(f"File {output_file} does not exist.")
     run_hashcat(hc22000_file, wordlist_file, output_file, ch)
 
     ch.basic_ack(delivery_tag=method.delivery_tag)
@@ -138,7 +144,7 @@ def start_service():
     channel.basic_qos(prefetch_count=1)
     channel.basic_consume(queue='request_queue', on_message_callback=on_request)
 
-    print("Waiting for requests...")  # Вывод в консоль для дебаггинга
+    print(f"Waiting for requests...")  # Вывод в консоль для дебаггинга
     channel.start_consuming()
 
 start_service()

@@ -3,8 +3,6 @@ import json
 import time
 import pika
 import os
-import docker
-from docker.errors import APIError
 
 # Константы путей к словарям
 WORDLIST_PATHS = {
@@ -14,11 +12,10 @@ WORDLIST_PATHS = {
     4: '/mnt/u/NewPojects/Proga/Docker/Docker/lab3/WPA2KeyExtractionService/dictionaries/rockyou.txt'
 }
 
-hashcat_cmd = os.getenv('HASHCAT_CMD', '/usr/bin/hashcat')
 
 def run_hashcat(hc22000_file, wordlist_file, output_file, channel):
     hashcat_cmd = [
-        hashcat_cmd , '-m', '22000', '-a', '0',
+        'hashcat' , '-m', '22000', '-a', '0',
         hc22000_file, wordlist_file,
         '--status', '--status-json', '--outfile', output_file
     ]

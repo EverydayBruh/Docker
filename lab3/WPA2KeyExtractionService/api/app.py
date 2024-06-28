@@ -1,33 +1,94 @@
-from flask import Flask, request, jsonify
-from flask_restful import Api, Resource
-import pika
-import json
 import os
+import uuid
+import json
+from flask import Flask, request, jsonify
+import pika
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
-api = Api(app)
 
-UPLOAD_FOLDER = '/app/uploads'
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
+UPLOAD_FOLDER = '/uploads'
+ALLOWED_EXTENSIONS = {'hc22000'}
 
-class Upload(Resource):
-    def post(self):
-        file = request.files['file']
-        if file:
-            filepath = os.path.join(UPLOAD_FOLDER, file.filename)
-            file.save(filepath)
-            connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
-            channel = connection.channel()
-            channel.queue_declare(queue='handshake_queue')
-            channel.basic_publish(exchange='',
-                                  routing_key='handshake_queue',
-                                  body=json.dumps({'filepath': filepath}))
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def send_rabbitmq_request(request_data):
+    RABBITMQ_HOST = os.getenv('RABBITMQ_HOST', 'localhost')
+    RABBITMQ_USER = os.getenv('RABBITMQ_USER', 'guest')
+    RABBITMQ_PASS = os.getenv('RABBITMQ_PASS', 'guest')
+
+    credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASS)
+    connection = pika.BlockingConnection(pika.ConnectionParameters(host=RABBITMQ_HOST, credentials=credentials))
+    channel = connection.channel()
+
+    # Объявляем очередь для запросов
+    channel.queue_declare(queue='api_request_queue')
+
+    # Создаем временную очередь для получения ответа
+    result = channel.queue_declare(queue='', exclusive=True)
+    callback_queue = result.method.queue
+
+    # Генерируем уникальный correlation_id для запроса
+    correlation_id = str(uuid.uuid4())
+
+    # Отправляем запрос
+    channel.basic_publish(
+        exchange='',
+        routing_key='api_request_queue',
+        properties=pika.BasicProperties(
+            reply_to=callback_queue,
+            correlation_id=correlation_id,
+        ),
+        body=json.dumps(request_data)
+    )
+
+    # Ожидаем ответ
+    for method_frame, properties, body in channel.consume(callback_queue):
+        if properties.correlation_id == correlation_id:
+            channel.basic_ack(method_frame.delivery_tag)
             connection.close()
-            return {'message': 'File uploaded successfully'}, 201
-        return {'message': 'No file uploaded'}, 400
+            return json.loads(body)
 
-api.add_resource(Upload, '/upload')
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part'}), 400
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+    if file and allowed_file(file.filename):
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+        
+        # Подготавливаем данные для отправки в RabbitMQ
+        request_data = {
+            'filepath': filepath,
+            'bssid': request.form.get('bssid'),
+            'ssid': request.form.get('ssid')
+        }
+        
+        # Отправляем запрос в RabbitMQ и получаем ответ
+        response = send_rabbitmq_request(request_data)
+        
+        return jsonify(response), 200
+    return jsonify({'error': 'File type not allowed'}), 400
+
+@app.route('/status/<path:filename>', methods=['GET'])
+def get_status(filename):
+    # Подготавливаем данные для отправки в RabbitMQ
+    request_data = {
+        'filepath': os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    }
+    
+    # Отправляем запрос в RabbitMQ и получаем ответ
+    response = send_rabbitmq_request(request_data)
+    
+    return jsonify(response), 200
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0')
+    app.run(host='0.0.0.0', debug=True)

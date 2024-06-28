@@ -1,14 +1,15 @@
 # Use an official Python runtime as a parent image
-FROM python:3.8-slim
+FROM python:3.9-slim
 
 # Set the working directory in the container
-WORKDIR /app
+WORKDIR /usr/src/app
 
-# Copy the current directory contents into the container at /app
-COPY . /app
+COPY requirements.txt ./
 
 # Install any needed packages specified in requirements.txt
-RUN pip install --no-cache-dir pika
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Run worker.py when the container launches
-CMD ["python", "worker.py"]
+COPY . .
+
+# Run the application
+CMD ["./wait-for-it.sh", "rabbitmq:5672", "--", "python", "-u", "./worker.py"]
