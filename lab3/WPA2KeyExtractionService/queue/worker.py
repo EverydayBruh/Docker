@@ -10,6 +10,7 @@ Base = declarative_base()
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+
 class Handshake(Base):
     __tablename__ = "handshakes"
     id = Column(Integer, primary_key=True, index=True)
@@ -22,6 +23,7 @@ class Handshake(Base):
     device_info = Column(String)
     password = Column(String)
     processed = Column(Boolean, default=False)
+    in_process = Column(Boolean, default=False)
     success = Column(Boolean, default=False)
 
 Base.metadata.create_all(bind=engine)
@@ -29,7 +31,7 @@ Base.metadata.create_all(bind=engine)
 def send_to_processor_queue(channel, handshake):
     channel.queue_declare(queue='request_queue')
     message = {
-        'hc22000_file': handshake.filepath,
+        'filepath': handshake.filepath,
         'wordlist_size': 1
     }
     channel.basic_publish(exchange='',
@@ -73,6 +75,7 @@ def update_handshake_result(session, filepath, bssid, ssid, password, success):
         handshake.bssid = bssid
         handshake.ssid = ssid
         handshake.processed = True
+        handshake.in_process = False
         handshake.success = success
         session.commit()
         print(f"Updated result for handshake: BSSID={bssid}, SSID={ssid}")
@@ -107,45 +110,76 @@ def handle_api_request(ch, method, properties, body):
     bssid = data.get('bssid')
     ssid = data.get('ssid')
 
+    http_method = properties.headers.get('method', 'GET')
+
     session = SessionLocal()
     
-    # Проверяем, существует ли handshake в БД
     handshake = session.query(Handshake).filter(Handshake.filepath == filepath).first()
     
-    if not handshake:
-        # Если handshake не существует, добавляем его
+    if http_method == 'POST' and not handshake:
         handshake = add_handshake_to_db(session, filepath, bssid, ssid)
     
     response = {}
     
-    if not handshake.processed:
-        # Если handshake не обработан, отправляем его в очередь и возвращаем позицию
-        send_to_processor_queue(ch, handshake)
-        position = session.query(func.count(Handshake.id)).filter(
-            Handshake.processed == False,
-            Handshake.id <= handshake.id
-        ).scalar()
-        response = {
-            'status': 'queued',
-            'position': position
-        }
+    if handshake:
+        if handshake.in_process:
+            response = {
+                'status': 'in_process',
+                'elapsed_time': handshake.elapsed_time,
+                'estimated_remaining_time': handshake.estimated_remaining_time,
+                'progress': handshake.progress,
+                'device_info': json.loads(handshake.device_info) if handshake.device_info else None
+            }
+        elif not handshake.processed:
+            if http_method == 'POST':
+                send_to_processor_queue(ch, handshake)
+            position = session.query(func.count(Handshake.id)).filter(
+                Handshake.processed == False,
+                Handshake.id <= handshake.id
+            ).scalar()
+            response = {
+                'status': 'queued',
+                'position': position
+            }
+        else:
+            response = {
+                'status': 'processed',
+                'success': handshake.success,
+                'password': handshake.password if handshake.success else None
+            }
     else:
-        # Если handshake уже обработан, возвращаем результат
         response = {
-            'status': 'processed',
-            'success': handshake.success,
-            'password': handshake.password if handshake.success else None
+            'status': 'not_found',
+            'message': 'Handshake not found in database'
         }
     
     session.close()
 
-    # Отправляем ответ обратно в API-сервис
     ch.basic_publish(exchange='',
                      routing_key=properties.reply_to,
                      properties=pika.BasicProperties(correlation_id=properties.correlation_id),
                      body=json.dumps(response))
     
     ch.basic_ack(delivery_tag=method.delivery_tag)
+
+def process_unprocessed_handshakes(channel):  
+    
+    session = SessionLocal()
+    if session.query(Handshake).filter(Handshake.in_process == True).count() > 0:
+        return 1
+    
+    unprocessed_handshakes = session.query(Handshake).filter(
+        Handshake.processed == False,
+        Handshake.in_process == False
+    ).order_by(Handshake.id).all()
+
+    for handshake in unprocessed_handshakes:
+        handshake.in_process = True
+        session.commit()
+        send_to_processor_queue(channel, handshake)
+
+    session.close()
+    return 0
 
 def start_worker():
     print(f'start_worker')
@@ -167,6 +201,16 @@ def start_worker():
     channel.basic_consume(queue='api_request_queue', on_message_callback=handle_api_request)
 
     print(f'Waiting for messages. To exit press CTRL+C')
+
+    # Обработка необработанных handshake'ов при запуске
+    process_unprocessed_handshakes(channel)
+
+    # Периодическая проверка и обработка необработанных handshake'ов
+    def check_unprocessed():
+        process_unprocessed_handshakes(channel)
+        connection.call_later(30, check_unprocessed) 
+
+    connection.call_later(30, check_unprocessed)
 
     try:
         channel.start_consuming()

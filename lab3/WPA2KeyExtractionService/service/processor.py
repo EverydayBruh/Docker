@@ -3,6 +3,8 @@ import json
 import time
 import pika
 import os
+import tempfile
+import base64
 
 # Константы путей к словарям
 WORDLIST_PATHS = {
@@ -12,8 +14,24 @@ WORDLIST_PATHS = {
     4: '/dictionaries/rockyou.txt'
 }
 
+def convert_cap_to_hc22000(cap_file):
+    with tempfile.NamedTemporaryFile(suffix='.hc22000', delete=False) as temp_hc22000:
+        hc22000_file = temp_hc22000.name
+    
+    convert_cmd = [
+        'hcxpcapngtool', '-o', hc22000_file, cap_file
+    ]
+    
+    process = subprocess.run(convert_cmd, capture_output=True, text=True)
+    
+    if process.returncode != 0:
+        print(f"Conversion failed: {process.stderr}")
+        return None
+    
+    return hc22000_file
 
-def run_hashcat(hc22000_file, wordlist_file, output_file, channel):
+def run_hashcat(filepath, wordlist_file, output_file, channel):
+    hc22000_file = convert_cap_to_hc22000(filepath)
     hashcat_cmd = [
         'hashcat' , '-m', '22000', '-a', '0',
         hc22000_file, wordlist_file,
@@ -28,7 +46,7 @@ def run_hashcat(hc22000_file, wordlist_file, output_file, channel):
             break
         if output.strip().startswith('{'):
             status = json.loads(output.strip())
-            send_progress(channel, hc22000_file, status)
+            send_progress(channel, filepath, status)
         print(output.strip())  # Вывод в консоль для дебаггинга
 
     stderr_output = process.stderr.read()
@@ -39,9 +57,9 @@ def run_hashcat(hc22000_file, wordlist_file, output_file, channel):
     process.stderr.close()
 
     # Отправка результата после завершения работы Hashcat
-    read_output(output_file, hc22000_file, channel)
+    read_output(output_file, filepath, channel)
 
-def send_progress(channel, hc22000_file, status):
+def send_progress(channel, filepath, status):
     progress = status.get("progress", [0, 0])
     recovered_hashes = status.get("recovered_hashes", [0, 1])
     devices = status.get("devices", [])
@@ -56,7 +74,7 @@ def send_progress(channel, hc22000_file, status):
     remaining_time_str = format_time(remaining_time)
 
     progress_message = {
-        'filepath': hc22000_file,
+        'filepath': filepath,
         'progress': f"{progress[0]}/{progress[1]} ({(progress[0]/progress[1])*100:.2f}%)",
         'recovered_hashes': f"{recovered_hashes[0]}/{recovered_hashes[1]}",
         'elapsed_time': elapsed_time_str,
@@ -107,7 +125,7 @@ def read_output(output_file, filepath, channel):
 
 def on_request(ch, method, properties, body):
     request = json.loads(body)
-    hc22000_file = request.get('hc22000_file')
+    filepath = request.get('filepath')
     wordlist_size = request.get('wordlist_size')
     output_file = 'hashcat_output.txt'
 
@@ -123,7 +141,7 @@ def on_request(ch, method, properties, body):
         print(f"File {output_file} has been deleted.")
     else:
         print(f"File {output_file} does not exist.")
-    run_hashcat(hc22000_file, wordlist_file, output_file, ch)
+    run_hashcat(filepath, wordlist_file, output_file, ch)
 
     ch.basic_ack(delivery_tag=method.delivery_tag)
 

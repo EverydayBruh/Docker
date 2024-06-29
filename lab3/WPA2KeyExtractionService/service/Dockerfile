@@ -6,6 +6,7 @@ WORKDIR /usr/src/app
 
 RUN apt-get update && \
     apt-get install -y hashcat && \
+    apt-get install -y hcxtools && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
