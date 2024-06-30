@@ -52,7 +52,6 @@ services:
       # NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:
       - ./dictionaries:/dictionaries
-      - ./Tests/hc22000_files:/Tests/hc22000_files
       - ./uploads:/uploads
       - ./service:/usr/src/app
     depends_on:

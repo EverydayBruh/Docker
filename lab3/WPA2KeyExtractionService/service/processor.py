@@ -8,10 +8,10 @@ import base64
 
 # Константы путей к словарям
 WORDLIST_PATHS = {
-    1: '/dictionaries/rockyou.txt',
+    1: '/dictionaries/Top57Thou-probable-WPA.txt',
     2: '/dictionaries/rockyou.txt',
-    3: '/dictionaries/rockyou.txt',
-    4: '/dictionaries/rockyou.txt'
+    3: '/dictionaries/BIG-WPA-LIST-1',
+    4: '/dictionaries/weakpass_3w'
 }
 
 def convert_cap_to_hc22000(cap_file):
