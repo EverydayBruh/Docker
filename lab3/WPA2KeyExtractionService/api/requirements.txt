@@ -1,3 +1,5 @@
 flask
 flask-restful
 pika
+python-logging-loki
+prometheus-client

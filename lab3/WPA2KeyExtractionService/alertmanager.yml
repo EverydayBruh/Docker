@@ -1,0 +1,19 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ['alertname']
+  group_wait: 10s
+  group_interval: 10s
+  repeat_interval: 1h
+  receiver: 'email-notifications'
+
+receivers:
+  - name: 'email-notifications'
+    email_configs:
+      - to: 'roliki2222222@gmail.com'
+        from: 'vslyalertmanager@yourdomain.com'
+        smarthost: 'smtp.yourdomain.com:587'
+        auth_username: 'alertmanager@yourdomain.com'
+        auth_password: 'P@ssw0rd123!'
+        auth_identity: 'alertmanager@yourdomain.com'

@@ -4,6 +4,40 @@ import json
 from flask import Flask, request, jsonify
 import pika
 from werkzeug.utils import secure_filename
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+import logging
+import logging_loki
+import time
+import traceback
+
+
+handler = logging_loki.LokiHandler(
+    url="http://loki:3100/loki/api/v1/push",
+    tags={"service": "API"},
+    version="1",
+)
+
+logger = logging.getLogger("API")
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+
+def log_exception(exc_type, exc_value, exc_traceback):
+    logger.error("Uncaught exception", 
+                 extra={
+                     "exc_info": (exc_type, exc_value, traceback.format_tb(exc_traceback))
+                 })
+
+import sys
+sys.excepthook = log_exception
+
+REQUEST_COUNT = Counter(
+    'request_count', 'App Request Count',
+    ['method', 'endpoint', 'http_status']
+)
+REQUEST_LATENCY = Histogram('request_latency_seconds', 'Request latency',
+    ['method', 'endpoint']
+)
+
 
 app = Flask(__name__)
 
@@ -48,6 +82,27 @@ def send_rabbitmq_request(request_data, method):
             channel.basic_ack(method_frame.delivery_tag)
             connection.close()
             return json.loads(body)
+        
+@app.before_request
+def before_request():
+    request.start_time = time.time()
+
+@app.after_request
+def after_request(response):   
+    request_latency = time.time() - request.start_time
+    REQUEST_LATENCY.labels(request.method, request.path).observe(request_latency)
+    REQUEST_COUNT.labels(request.method, request.path, response.status_code).inc()
+    logger.info(f"Request processed", extra={
+        "path": request.path,
+        "method": request.method,
+        "status_code": response.status_code,
+        "request_time": request_latency
+    })
+    return response
+
+@app.route('/metrics')
+def metrics():
+    return generate_latest(), 200, {'Content-Type': CONTENT_TYPE_LATEST}
 
 @app.route('/upload', methods=['POST'])
 def upload_file():

@@ -3,6 +3,11 @@ import json
 import os
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, func
 from sqlalchemy.orm import declarative_base, sessionmaker
+import logging
+import logging_loki
+import time
+import traceback
+
 
 DATABASE_URL = "sqlite:///./data/handshakes.db"
 
@@ -10,6 +15,24 @@ Base = declarative_base()
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+handler = logging_loki.LokiHandler(
+    url="http://loki:3100/loki/api/v1/push",
+    tags={"service": "Worker"},
+    version="1",
+)
+
+logger = logging.getLogger("Worker")
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+
+def log_exception(exc_type, exc_value, exc_traceback):
+    logger.error("Uncaught exception", 
+                 extra={
+                     "exc_info": (exc_type, exc_value, traceback.format_tb(exc_traceback))
+                 })
+
+import sys
+sys.excepthook = log_exception
 
 class Handshake(Base):
     __tablename__ = "handshakes"
@@ -84,6 +107,7 @@ def update_handshake_result(session, filepath, bssid, ssid, password, success):
 
 
 def progress_callback(ch, method, properties, body):
+    logger.info('Received progress update: %s', body)
     data = json.loads(body)
     filepath = data.get('filepath')
     
@@ -93,6 +117,7 @@ def progress_callback(ch, method, properties, body):
 
 
 def result_callback(ch, method, properties, body):
+    logger.info('Received result: %s', body)
     data = json.loads(body)
     filepath = data.get('filepath')
     bssid = data.get('bssid')
@@ -105,6 +130,7 @@ def result_callback(ch, method, properties, body):
     session.close()
 
 def handle_api_request(ch, method, properties, body):
+    logger.info('Handling API request: %s', body)
     data = json.loads(body)
     filepath = data.get('filepath')
     bssid = data.get('bssid')

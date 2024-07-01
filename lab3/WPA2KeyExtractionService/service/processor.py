@@ -5,6 +5,29 @@ import pika
 import os
 import tempfile
 import base64
+import logging
+import logging_loki
+import time
+import traceback
+
+handler = logging_loki.LokiHandler(
+    url="http://loki:3100/loki/api/v1/push",
+    tags={"service": "Processor"},
+    version="1",
+)
+
+logger = logging.getLogger("Processor")
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+
+def log_exception(exc_type, exc_value, exc_traceback):
+    logger.error("Uncaught exception", 
+                 extra={
+                     "exc_info": (exc_type, exc_value, traceback.format_tb(exc_traceback))
+                 })
+
+import sys
+sys.excepthook = log_exception
 
 # Константы путей к словарям
 WORDLIST_PATHS = {
@@ -31,6 +54,7 @@ def convert_cap_to_hc22000(cap_file):
     return hc22000_file
 
 def run_hashcat(filepath, wordlist_file, output_file, channel):
+    logger.info('Starting hashcat for file: %s', filepath)
     hc22000_file = convert_cap_to_hc22000(filepath)
     hashcat_cmd = [
         'hashcat' , '-m', '22000', '-a', '0',
@@ -124,6 +148,7 @@ def read_output(output_file, filepath, channel):
 
 
 def on_request(ch, method, properties, body):
+    logger.info('Received processing request: %s', body)
     request = json.loads(body)
     filepath = request.get('filepath')
     wordlist_size = request.get('wordlist_size')
